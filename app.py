@@ -14,26 +14,11 @@ from PIL import Image
 def sanitize(name: str) -> str:
     return re.sub(r'[\\/:*?"<>|]', '_', name).strip()
 
-def get_background_color(img: Image.Image) -> tuple:
-    img_rgb = img.convert('RGB')
-    w, h = img_rgb.size
-    corners = [
-        img_rgb.getpixel((0, 0)),
-        img_rgb.getpixel((w-1, 0)),
-        img_rgb.getpixel((0, h-1)),
-        img_rgb.getpixel((w-1, h-1)),
-    ]
-    return tuple(int(sum(c[i] for c in corners) / 4) for i in range(3))
-
 def convert_to_jpg(content: bytes) -> bytes:
-    """Convert any image format to JPG. Handles PNG, WEBP, GIF, etc."""
+    """Convert any image format to JPG."""
     img = Image.open(io.BytesIO(content))
     if img.mode in ('RGBA', 'LA', 'P'):
-        background = Image.new('RGB', img.size, get_background_color(img))
-        if img.mode == 'P':
-            img = img.convert('RGBA')
-        background.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
-        img = background
+        img = img.convert('RGBA').convert('RGB')
     else:
         img = img.convert('RGB')
     buf = io.BytesIO()
