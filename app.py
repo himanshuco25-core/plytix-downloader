@@ -15,40 +15,40 @@ def sanitize(name: str) -> str:
     return re.sub(r'[\\/:*?"<>|]', '_', name).strip()
 
 
-def to_rgb(img: Image.Image) -> Image.Image:
-    """Convert any image mode to RGB with white background for transparency."""
-    if img.mode in ('RGBA', 'LA', 'P'):
-        bg = Image.new('RGB', img.size, (255, 255, 255))
-        if img.mode == 'P':
-            img = img.convert('RGBA')
-        bg.paste(img, mask=img.split()[-1] if img.mode in ('RGBA', 'LA') else None)
-        return bg
-    return img.convert('RGB')
+def detect_ratio(img: Image.Image) -> str:
+    w, h  = img.size
+    ratio = w / h
+    if abs(ratio - 1.0)  <= 0.02: return '1:1'
+    if abs(ratio - 0.75) <= 0.02: return '3:4'
+    return 'unknown'
 
 
-def resize_to_1080x1440(img: Image.Image) -> Image.Image:
-    """
-    Resize to exactly 1080x1440 with white padding.
-    Never crops. Never upscales. Centers product on white canvas.
-    """
-    TARGET_W, TARGET_H = 1080, 1440
-    if img.size == (TARGET_W, TARGET_H):
-        return img
-    scale = min(TARGET_W / img.width, TARGET_H / img.height)
-    if scale > 1:
-        scale = 1
-    new_w = int(img.width * scale)
-    new_h = int(img.height * scale)
-    img_resized = img.resize((new_w, new_h), Image.LANCZOS)
-    canvas   = Image.new('RGB', (TARGET_W, TARGET_H), (255, 255, 255))
-    offset_x = (TARGET_W - new_w) // 2
-    offset_y = (TARGET_H - new_h) // 2
-    canvas.paste(img_resized, (offset_x, offset_y))
-    return canvas
+def resize_to_1080x1440(img: Image.Image) -> tuple:
+    TARGET_W = 1080
+    TARGET_H = 1440
+    orig_w, orig_h = img.size
+    ratio = detect_ratio(img)
+
+    if ratio == 'unknown':
+        return None, f'{orig_w}x{orig_h}', '-', '-', ratio, \
+               f'Unexpected ratio {orig_w}x{orig_h} ({orig_w/orig_h:.2f}) — expected 1:1 or 3:4'
+
+    if ratio == '3:4':
+        img_final = img.resize((TARGET_W, TARGET_H), Image.LANCZOS)
+        return img_final, f'{orig_w}x{orig_h}', f'{TARGET_W}x{TARGET_H}', \
+               f'{TARGET_W}x{TARGET_H}', ratio, None
+
+    if ratio == '1:1':
+        action_note  = 'upscaled' if orig_w < TARGET_W else 'downscaled'
+        img_scaled   = img.resize((TARGET_W, TARGET_W), Image.LANCZOS)
+        canvas       = Image.new('RGB', (TARGET_W, TARGET_H), (255, 255, 255))
+        offset_y     = (TARGET_H - TARGET_W) // 2
+        canvas.paste(img_scaled, (0, offset_y))
+        return canvas, f'{orig_w}x{orig_h}', f'{TARGET_W}x{TARGET_W} ({action_note})', \
+               f'{TARGET_W}x{TARGET_H}', ratio, None
 
 
 def compress_to_limit(img: Image.Image, max_mb: float = 1.8) -> bytes:
-    """Compress image to under max_mb. Starts quality at 95, steps down by 2."""
     max_bytes = int(max_mb * 1024 * 1024)
     for quality in range(95, 58, -2):
         buf = io.BytesIO()
@@ -60,52 +60,14 @@ def compress_to_limit(img: Image.Image, max_mb: float = 1.8) -> bytes:
     return buf.getvalue()
 
 
-def process_image(content: bytes, resize: bool, compress: bool,
-                  max_mb: float, target_mb: float) -> tuple:
-    """
-    Full processing pipeline:
-    1. Convert to RGB / JPG
-    2. Resize to 1080x1440 with white padding (if enabled)
-    3. Compress to target size (if over limit)
-    Returns (final_bytes, log_dict)
-    """
-    raw_mb  = len(content) / (1024 * 1024)
-    img     = Image.open(io.BytesIO(content))
-    orig_w, orig_h = img.size
-    img     = to_rgb(img)
-
-    # Resize
-    if resize:
-        img = resize_to_1080x1440(img)
-
-    final_w, final_h = img.size
-
-    # Save at high quality first
-    buf = io.BytesIO()
-    img.save(buf, format='JPEG', quality=95, optimize=True)
-    final_bytes = buf.getvalue()
-    final_mb    = len(final_bytes) / (1024 * 1024)
-    action      = 'resized' if resize else 'converted'
-
-    # Compress if needed
-    if compress and raw_mb > max_mb:
-        final_bytes = compress_to_limit(img, target_mb)
-        final_mb    = len(final_bytes) / (1024 * 1024)
-        action      = 'compressed'
-    elif compress and final_mb > max_mb:
-        # Edge case: resize made it larger
-        final_bytes = compress_to_limit(img, target_mb)
-        final_mb    = len(final_bytes) / (1024 * 1024)
-        action      = 'compressed'
-
-    log = {
-        'orig_dim'  : f'{orig_w}x{orig_h}',
-        'final_dim' : f'{final_w}x{final_h}',
-        'raw_mb'    : round(raw_mb, 2),
-        'final_mb'  : round(final_mb, 2),
-        'action'    : action,
-    }
-    return final_bytes, log
+def to_rgb(img: Image.Image) -> Image.Image:
+    if img.mode in ('RGBA', 'LA', 'P'):
+        bg = Image.new('RGB', img.size, (255, 255, 255))
+        if img.mode == 'P':
+            img = img.convert('RGBA')
+        bg.paste(img, mask=img.split()[-1] if img.mode in ('RGBA', 'LA') else None)
+        return bg
+    return img.convert('RGB')
 
 
 # ── UI ────────────────────────────────────────────────────────────────────────
@@ -125,24 +87,26 @@ with st.expander("📋 Expected CSV format"):
 - **SKU** — product code
 - **Assets** — one or more image URLs separated by commas
 - **Style ID** — used as the folder name (optional, falls back to SKU)
+- All images converted to **JPG** automatically
 """)
 
-# ── Settings panel ────────────────────────────────────────────────────────────
+# ── Settings ──────────────────────────────────────────────────────────────────
 with st.expander("⚙️ Processing Settings", expanded=True):
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         do_resize   = st.toggle("Resize to 1080×1440", value=True,
-                                help="Scale image to fit 1080x1440 with white padding. Never crops.")
+                                help="1:1 → scale to 1080x1080 then pad. 3:4 → scale directly to 1080x1440.")
     with col2:
         do_compress = st.toggle("Compress if > 2MB", value=True,
-                                help="Compress images above 2MB down to 1.8MB.")
+                                help="Compress images above threshold down to target size.")
     with col3:
         max_mb      = st.number_input("Compress threshold (MB)", value=2.0, step=0.1, min_value=0.5)
+    with col4:
         target_mb   = st.number_input("Target size after compress (MB)", value=1.8, step=0.1, min_value=0.3)
 
 st.divider()
 
-# ── File upload ───────────────────────────────────────────────────────────────
+# ── Upload ────────────────────────────────────────────────────────────────────
 uploaded_file = st.file_uploader("Upload CSV", type=['csv'])
 
 if uploaded_file:
@@ -175,10 +139,12 @@ if uploaded_file:
 
         zip_buffer   = io.BytesIO()
         progress_bar = st.progress(0, text="Starting...")
-        log_box      = st.empty()
         log_rows     = []
-        live_logs    = []
         total_done   = 0
+
+        # ── Live log container ─────────────────────────────────────────────────
+        st.markdown("### 📋 Processing Log")
+        log_container = st.container()
 
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
             for _, row in df.iterrows():
@@ -186,9 +152,8 @@ if uploaded_file:
                 sku      = str(row['SKU']).strip()
                 urls     = row['url_list']
 
-                folder_log = f"\n📁 **Style ID: {style_id}** | SKU: {sku} | {len(urls)} images"
-                live_logs.append(folder_log)
-                log_box.markdown("\n".join(live_logs))
+                with log_container:
+                    st.markdown(f"---\n**📁 Style ID: `{style_id}`** | SKU: `{sku}` | {len(urls)} images")
 
                 for rank, url in enumerate(urls, start=1):
                     filename = f"{rank}.jpg"
@@ -196,72 +161,87 @@ if uploaded_file:
 
                     # Download
                     try:
-                        resp = requests.get(url, timeout=30)
+                        resp    = requests.get(url, timeout=30)
                         resp.raise_for_status()
                         content = resp.content
                     except Exception as e:
-                        msg = f"  ❌ [{rank}] {filename} → download error: {e}"
-                        live_logs.append(msg)
-                        log_box.markdown("\n".join(live_logs))
+                        with log_container:
+                            st.error(f"❌ [{rank}] `{filename}` → Download error: {e}")
                         log_rows.append({'SKU': sku, 'Style ID': style_id, 'File': filename,
-                                         'URL': url, 'Status': f'error:{e}',
-                                         'Action': 'error', 'Original MB': 0, 'Final MB': 0,
-                                         'Original Dim': '-', 'Final Dim': '-'})
+                                         'URL': url, 'Status': f'error:{e}', 'Action': 'error',
+                                         'Original MB': 0, 'Final MB': 0,
+                                         'Original Dim': '-', 'Scaled Dim': '-', 'Final Dim': '-',
+                                         'Ratio': '-'})
                         total_done += 1
                         progress_bar.progress(total_done / total_images,
                                               text=f"{total_done}/{total_images} processed")
                         continue
 
-                    # Process
-                    try:
-                        final_bytes, plog = process_image(
-                            content,
-                            resize   = do_resize,
-                            compress = do_compress,
-                            max_mb   = max_mb,
-                            target_mb= target_mb
-                        )
-                        zf.writestr(zip_path, final_bytes)
-                        status = 'ok'
+                    raw_mb = len(content) / (1024 * 1024)
 
-                        if plog['action'] == 'compressed':
-                            msg = (f"  ✅ [{rank}] {filename}"
-                                   f" → {plog['orig_dim']} → {plog['final_dim']}"
-                                   f" | {plog['raw_mb']}MB → {plog['final_mb']}MB"
-                                   f" | 🗜️ compressed")
-                        elif plog['action'] == 'resized':
-                            msg = (f"  ✅ [{rank}] {filename}"
-                                   f" → {plog['orig_dim']} → {plog['final_dim']}"
-                                   f" | {plog['raw_mb']}MB → {plog['final_mb']}MB"
-                                   f" | 📐 resized")
+                    # Convert to RGB
+                    img = Image.open(io.BytesIO(content))
+                    img = to_rgb(img)
+
+                    # Resize
+                    if do_resize:
+                        img, dim_orig, dim_scaled, dim_final, ratio, err = resize_to_1080x1440(img)
+                        if err:
+                            with log_container:
+                                st.warning(f"⚠️ [{rank}] `{filename}` → {err} — **skipped**")
+                            log_rows.append({'SKU': sku, 'Style ID': style_id, 'File': filename,
+                                             'URL': url, 'Status': err, 'Action': 'skipped-bad-ratio',
+                                             'Original MB': round(raw_mb, 2), 'Final MB': 0,
+                                             'Original Dim': dim_orig, 'Scaled Dim': '-',
+                                             'Final Dim': '-', 'Ratio': ratio})
+                            total_done += 1
+                            progress_bar.progress(total_done / total_images,
+                                                  text=f"{total_done}/{total_images} processed")
+                            continue
+                    else:
+                        dim_orig   = f'{img.width}x{img.height}'
+                        dim_scaled = dim_orig
+                        dim_final  = dim_orig
+                        ratio      = detect_ratio(img)
+
+                    # Compress
+                    needs_compression = raw_mb > max_mb
+
+                    if not needs_compression:
+                        buf = io.BytesIO()
+                        img.save(buf, format='JPEG', quality=95, optimize=True)
+                        final_bytes = buf.getvalue()
+                        final_mb    = len(final_bytes) / (1024 * 1024)
+
+                        if final_mb > max_mb:
+                            final_bytes = compress_to_limit(img, target_mb)
+                            final_mb    = len(final_bytes) / (1024 * 1024)
+                            action      = 'compressed'
                         else:
-                            msg = (f"  ✅ [{rank}] {filename}"
-                                   f" → {plog['orig_dim']} → {plog['final_dim']}"
-                                   f" | {plog['raw_mb']}MB → {plog['final_mb']}MB"
-                                   f" | 🔄 converted to JPG")
+                            action = 'resized' if do_resize else 'converted'
+                    else:
+                        final_bytes = compress_to_limit(img, target_mb)
+                        final_mb    = len(final_bytes) / (1024 * 1024)
+                        action      = 'compressed'
 
-                    except Exception as e:
-                        final_bytes = content
-                        plog   = {'orig_dim': '-', 'final_dim': '-',
-                                  'raw_mb': 0, 'final_mb': 0, 'action': 'error'}
-                        status = f'error: processing failed — {e}'
-                        msg    = f"  ❌ [{rank}] {filename} → processing error: {e}"
+                    zf.writestr(zip_path, final_bytes)
 
-                    live_logs.append(msg)
-                    log_box.markdown("\n".join(live_logs))
+                    # ── Per image log ──────────────────────────────────────────
+                    size_change = f"{raw_mb:.2f}MB → {final_mb:.2f}MB"
+                    dim_change  = f"{dim_orig} ({ratio}) → {dim_scaled} → {dim_final}"
+                    tag         = "🗜️ compressed" if action == 'compressed' else "📐 resized" if action == 'resized' else "🔄 converted"
 
-                    log_rows.append({
-                        'SKU'         : sku,
-                        'Style ID'    : style_id,
-                        'File'        : filename,
-                        'URL'         : url,
-                        'Status'      : status,
-                        'Action'      : plog['action'],
-                        'Original MB' : plog['raw_mb'],
-                        'Final MB'    : plog['final_mb'],
-                        'Original Dim': plog['orig_dim'],
-                        'Final Dim'   : plog['final_dim'],
-                    })
+                    with log_container:
+                        col_a, col_b, col_c = st.columns([1, 3, 2])
+                        col_a.markdown(f"✅ `[{rank}] {filename}`")
+                        col_b.markdown(f"📐 {dim_change}")
+                        col_c.markdown(f"💾 {size_change} | {tag}")
+
+                    log_rows.append({'SKU': sku, 'Style ID': style_id, 'File': filename,
+                                     'URL': url, 'Status': 'ok', 'Action': action,
+                                     'Original MB': round(raw_mb, 2), 'Final MB': round(final_mb, 2),
+                                     'Original Dim': dim_orig, 'Scaled Dim': dim_scaled,
+                                     'Final Dim': dim_final, 'Ratio': ratio})
 
                     total_done += 1
                     progress_bar.progress(
@@ -274,27 +254,33 @@ if uploaded_file:
 
         # ── Summary ───────────────────────────────────────────────────────────
         st.divider()
-        log_df = pd.DataFrame(log_rows)
-        ok          = (log_df['Status'] == 'ok').sum()
-        errors      = (log_df['Status'] != 'ok').sum()
-        compressed  = (log_df['Action'] == 'compressed').sum()
-        resized     = (log_df['Action'] == 'resized').sum()
-        converted   = (log_df['Action'] == 'converted').sum()
-
         st.subheader("📊 Summary")
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("✅ Success",    ok)
-        c2.metric("❌ Errors",     errors)
-        c3.metric("📐 Resized",    resized)
-        c4.metric("🗜️ Compressed", compressed)
-        c5.metric("🔄 JPG only",   converted)
+
+        log_df     = pd.DataFrame(log_rows)
+        ok         = (log_df['Status'] == 'ok').sum()
+        errors     = (log_df['Status'] != 'ok').sum()
+        compressed = (log_df['Action'] == 'compressed').sum()
+        resized    = (log_df['Action'] == 'resized').sum()
+        converted  = (log_df['Action'] == 'converted').sum()
+        bad_ratio  = (log_df['Action'] == 'skipped-bad-ratio').sum()
+
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1.metric("✅ Success",       ok)
+        c2.metric("❌ Errors",        errors)
+        c3.metric("📐 Resized",       resized)
+        c4.metric("🗜️ Compressed",    compressed)
+        c5.metric("🔄 JPG converted", converted)
+        c6.metric("⚠️ Bad ratio",     bad_ratio)
 
         ok_df = log_df[log_df['Status'] == 'ok']
         if not ok_df.empty:
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Avg original size", f"{ok_df['Original MB'].mean():.2f} MB")
-            col2.metric("Avg final size",    f"{ok_df['Final MB'].mean():.2f} MB")
-            col3.metric("Total size saved",  f"{(ok_df['Original MB'].sum() - ok_df['Final MB'].sum()):.1f} MB")
+            cc1, cc2, cc3 = st.columns(3)
+            cc1.metric("Avg original size", f"{ok_df['Original MB'].mean():.2f} MB")
+            cc2.metric("Avg final size",    f"{ok_df['Final MB'].mean():.2f} MB")
+            cc3.metric("Total size saved",  f"{(ok_df['Original MB'].sum() - ok_df['Final MB'].sum()):.1f} MB")
+
+        if bad_ratio > 0:
+            st.warning("⚠️ Some images had unexpected ratios and were skipped. Check log CSV for details.")
 
         st.divider()
 
@@ -306,13 +292,6 @@ if uploaded_file:
             use_container_width = True,
             type                = "primary"
         )
-
-        if errors:
-            st.markdown("**Failed downloads:**")
-            st.dataframe(
-                log_df[log_df['Status'] != 'ok'][['SKU', 'Style ID', 'File', 'URL', 'Status']],
-                use_container_width=True
-            )
 
         log_csv = log_df.to_csv(index=False).encode()
         st.download_button(
