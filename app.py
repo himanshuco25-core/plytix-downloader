@@ -1,3 +1,4 @@
+import gc
 import streamlit as st
 import pandas as pd
 import requests
@@ -30,36 +31,39 @@ def resize_to_1080x1440(img: Image.Image) -> tuple:
     orig_w, orig_h = img.size
     ratio = detect_ratio(img)
 
-    # 3:4 -> scale directly to 1080x1440
     if ratio == '3:4':
         img_final = img.resize((TARGET_W, TARGET_H), Image.LANCZOS)
-        return img_final, f'{orig_w}x{orig_h}', f'{TARGET_W}x{TARGET_H}',                f'{TARGET_W}x{TARGET_H}', ratio, None
+        return img_final, f'{orig_w}x{orig_h}', f'{TARGET_W}x{TARGET_H}', \
+               f'{TARGET_W}x{TARGET_H}', ratio, None
 
-    # 1:1 -> scale to 1080x1080, white padding top/bottom
     if ratio == '1:1':
         action_note = 'upscaled' if orig_w < TARGET_W else 'downscaled'
         img_scaled  = img.resize((TARGET_W, TARGET_W), Image.LANCZOS)
         canvas      = Image.new('RGB', (TARGET_W, TARGET_H), (255, 255, 255))
         offset_y    = (TARGET_H - TARGET_W) // 2
         canvas.paste(img_scaled, (0, offset_y))
-        return canvas, f'{orig_w}x{orig_h}', f'{TARGET_W}x{TARGET_W} ({action_note})',                f'{TARGET_W}x{TARGET_H}', ratio, None
+        img_scaled.close()
+        return canvas, f'{orig_w}x{orig_h}', f'{TARGET_W}x{TARGET_W} ({action_note})', \
+               f'{TARGET_W}x{TARGET_H}', ratio, None
 
-    # Unknown ratio -> fix width to 1080, adjust height proportionally
     scale = TARGET_W / orig_w
     new_w = TARGET_W
     new_h = int(orig_h * scale)
 
-    # Edge case: scaled height exceeds 1440 -> error
     if new_h > TARGET_H:
-        return None, f'{orig_w}x{orig_h}', '-', '-', f'unknown ({orig_w/orig_h:.2f})',                f'Height after scaling = {new_h}px exceeds 1440px — ratio {orig_w}:{orig_h} not supported'
+        return None, f'{orig_w}x{orig_h}', '-', '-', f'unknown ({orig_w/orig_h:.2f})', \
+               f'Height after scaling = {new_h}px exceeds 1440px — ratio {orig_w}:{orig_h} not supported'
 
-    # Scaled height <= 1440 -> white padding top and bottom
     img_scaled = img.resize((new_w, new_h), Image.LANCZOS)
     canvas     = Image.new('RGB', (TARGET_W, TARGET_H), (255, 255, 255))
     offset_y   = (TARGET_H - new_h) // 2
     canvas.paste(img_scaled, (0, offset_y))
+    img_scaled.close()
 
-    return canvas, f'{orig_w}x{orig_h}', f'{new_w}x{new_h}',            f'{TARGET_W}x{TARGET_H}', f'unknown ({orig_w/orig_h:.2f})', None
+    return canvas, f'{orig_w}x{orig_h}', f'{new_w}x{new_h}', \
+           f'{TARGET_W}x{TARGET_H}', f'unknown ({orig_w/orig_h:.2f})', None
+
+
 def adjust_size_to_range(img: Image.Image, min_mb: float, max_mb: float) -> tuple:
     min_bytes = int(min_mb * 1024 * 1024)
     max_bytes = int(max_mb * 1024 * 1024)
@@ -94,20 +98,26 @@ def adjust_size_to_range(img: Image.Image, min_mb: float, max_mb: float) -> tupl
             noisy_img = Image.fromarray(
                 np.clip(img_array + noise, 0, 255).astype(np.uint8)
             )
+            del img_array, noise
             buf = io.BytesIO()
             noisy_img.save(buf, format='JPEG', quality=100, optimize=True)
 
             if buf.tell() >= min_bytes:
                 if buf.tell() <= max_bytes:
-                    return buf.getvalue(), round(buf.tell() / (1024*1024), 2), \
-                           f'noise-boosted (level {noise_level})'
+                    result = buf.getvalue(), round(buf.tell() / (1024*1024), 2), \
+                             f'noise-boosted (level {noise_level})'
+                    noisy_img.close()
+                    return result
                 else:
                     for quality in range(93, 58, -2):
                         buf2 = io.BytesIO()
                         noisy_img.save(buf2, format='JPEG', quality=quality, optimize=True)
                         if min_bytes <= buf2.tell() <= max_bytes:
-                            return buf2.getvalue(), round(buf2.tell() / (1024*1024), 2), \
-                                   f'noise-boosted then compressed (level {noise_level})'
+                            result = buf2.getvalue(), round(buf2.tell() / (1024*1024), 2), \
+                                     f'noise-boosted then compressed (level {noise_level})'
+                            noisy_img.close()
+                            return result
+            noisy_img.close()
 
         buf = io.BytesIO()
         img.save(buf, format='JPEG', quality=100, optimize=True)
@@ -161,12 +171,12 @@ if st.session_state.done:
 
     st.subheader("📊 Summary")
     c1, c2, c3, c4, c5, c6 = st.columns(6)
-    c1.metric("✅ Success",        ok)
+    c1.metric("✅ Success",         ok)
     c2.metric("❌ Rejected <500KB", rejected)
-    c3.metric("⚠️ Bad ratio",      bad_ratio)
-    c4.metric("❌ Errors",          errors)
-    c5.metric("🗜️ Compressed",     compressed)
-    c6.metric("⬆️ Boosted",        boosted)
+    c3.metric("⚠️ Bad ratio",       bad_ratio)
+    c4.metric("❌ Errors",           errors)
+    c5.metric("🗜️ Compressed",      compressed)
+    c6.metric("⬆️ Boosted",         boosted)
 
     ok_df = log_df[log_df['Status'] == 'ok']
     if not ok_df.empty:
@@ -183,27 +193,27 @@ if st.session_state.done:
     dl1, dl2 = st.columns(2)
     with dl1:
         st.download_button(
-            label               = "📥 Download ZIP",
-            data                = st.session_state.zip_buffer,
-            file_name           = "plytix_assets.zip",
-            mime                = "application/zip",
-            use_container_width = True,
-            type                = "primary"
+            label     = "📥 Download ZIP",
+            data      = st.session_state.zip_buffer,
+            file_name = "plytix_assets.zip",
+            mime      = "application/zip",
+            width     = 'stretch',
+            type      = "primary"
         )
     with dl2:
         st.download_button(
-            label               = "📄 Download Log CSV",
-            data                = log_df.to_csv(index=False).encode(),
-            file_name           = "download_log.csv",
-            mime                = "text/csv",
-            use_container_width = True
+            label     = "📄 Download Log CSV",
+            data      = log_df.to_csv(index=False).encode(),
+            file_name = "download_log.csv",
+            mime      = "text/csv",
+            width     = 'stretch'
         )
 
     with st.expander("📋 Full Processing Log", expanded=False):
-        st.dataframe(log_df, use_container_width=True)
+        st.dataframe(log_df, width='stretch')
 
     st.divider()
-    if st.button("🔄 Process Another Batch", use_container_width=True):
+    if st.button("🔄 Process Another Batch", width='stretch'):
         st.session_state.zip_buffer = None
         st.session_state.log_df     = None
         st.session_state.done       = False
@@ -264,11 +274,11 @@ if uploaded_file:
     st.success(f"✅ {len(df)} SKUs | {total_images} total images")
     preview_df = df[['SKU', 'Style ID']].copy()
     preview_df['Image Count'] = df['url_list'].apply(len)
-    st.dataframe(preview_df, use_container_width=True)
+    st.dataframe(preview_df, width='stretch')
 
     st.divider()
 
-    if st.button("⬇️ Start Processing & Build ZIP", type="primary", use_container_width=True):
+    if st.button("⬇️ Start Processing & Build ZIP", type="primary", width='stretch'):
 
         zip_buffer    = io.BytesIO()
         progress_bar  = st.progress(0, text="Starting...")
@@ -329,6 +339,8 @@ if uploaded_file:
                             total_done += 1
                             progress_bar.progress(total_done / total_images,
                                                   text=f"{total_done}/{total_images} processed")
+                            del content
+                            gc.collect()
                             continue
                     else:
                         dim_orig   = f'{img.width}x{img.height}'
@@ -363,6 +375,10 @@ if uploaded_file:
                                      'Original Dim': dim_orig, 'Scaled Dim': dim_scaled,
                                      'Final Dim': dim_final, 'Ratio': ratio,
                                      'Size Action': size_action})
+
+                    # ── Free memory after each image ──────────────────────────
+                    del content, img, final_bytes
+                    gc.collect()
 
                     total_done += 1
                     progress_bar.progress(
