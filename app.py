@@ -197,7 +197,7 @@ if st.session_state.done:
             data      = st.session_state.zip_buffer,
             file_name = "plytix_assets.zip",
             mime      = "application/zip",
-            width     = 'stretch',
+            use_container_width = True,
             type      = "primary"
         )
     with dl2:
@@ -206,14 +206,14 @@ if st.session_state.done:
             data      = log_df.to_csv(index=False).encode(),
             file_name = "download_log.csv",
             mime      = "text/csv",
-            width     = 'stretch'
+            use_container_width = True
         )
 
     with st.expander("📋 Full Processing Log", expanded=False):
-        st.dataframe(log_df, use_container_width=True)
+        st.dataframe(log_df)
 
     st.divider()
-    if st.button("🔄 Process Another Batch", width='stretch'):
+    if st.button("🔄 Process Another Batch", use_container_width=True):
         st.session_state.zip_buffer = None
         st.session_state.log_df     = None
         st.session_state.done       = False
@@ -274,11 +274,11 @@ if uploaded_file:
     st.success(f"✅ {len(df)} SKUs | {total_images} total images")
     preview_df = df[['SKU', 'Style ID']].copy()
     preview_df['Image Count'] = df['url_list'].apply(len)
-    st.dataframe(preview_df, use_container_width=True)
+    st.dataframe(preview_df)
 
     st.divider()
 
-    if st.button("⬇️ Start Processing & Build ZIP", type="primary", width='stretch'):
+    if st.button("⬇️ Start Processing & Build ZIP", type="primary", use_container_width=True):
 
         zip_buffer    = io.BytesIO()
         progress_bar  = st.progress(0, text="Starting...")
