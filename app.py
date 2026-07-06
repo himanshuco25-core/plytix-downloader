@@ -210,7 +210,7 @@ if st.session_state.done:
         )
 
     with st.expander("📋 Full Processing Log", expanded=False):
-        st.dataframe(log_df, width='stretch')
+        st.dataframe(log_df, use_container_width=True)
 
     st.divider()
     if st.button("🔄 Process Another Batch", width='stretch'):
@@ -274,7 +274,7 @@ if uploaded_file:
     st.success(f"✅ {len(df)} SKUs | {total_images} total images")
     preview_df = df[['SKU', 'Style ID']].copy()
     preview_df['Image Count'] = df['url_list'].apply(len)
-    st.dataframe(preview_df, width='stretch')
+    st.dataframe(preview_df, use_container_width=True)
 
     st.divider()
 
